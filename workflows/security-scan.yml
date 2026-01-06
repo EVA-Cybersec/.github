@@ -67,8 +67,8 @@ jobs:
         with:
           scan-type: 'fs'
           scan-ref: '.'
-          format: 'json'
-          output: 'trivy-results.json'
+          format: 'sarif'
+          output: 'trivy-fs.sarif'
           severity: ${{ inputs.trivy_severity }}
 
       - name: Run Trivy IaC scanner
@@ -76,18 +76,16 @@ jobs:
         with:
           scan-type: 'config'
           scan-ref: '.'
-          format: 'json'
-          output: 'trivy-iac-results.json'
+          format: 'sarif'
+          output: 'trivy-iac.sarif'
           severity: ${{ inputs.trivy_severity }}
         continue-on-error: true
 
-      - name: Upload Trivy results as artifact
+      - name: Upload Trivy results
         uses: actions/upload-artifact@v4
         with:
           name: trivy-results
-          path: |
-            trivy-results.json
-            trivy-iac-results.json
+          path: '*.sarif'
           retention-days: 30
 
   # ===========================================
@@ -101,31 +99,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Necessário para escanear histórico completo
+          fetch-depth: 0
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true
         continue-on-error: true
-
-      - name: Run Gitleaks (JSON output)
-        run: |
-          # Instalar Gitleaks
-          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
-          tar -xzf gitleaks_8.18.4_linux_x64.tar.gz
-
-          # Executar scan e gerar relatório JSON
-          ./gitleaks detect --source . --report-format json --report-path gitleaks-results.json --exit-code 0
-        continue-on-error: true
-
-      - name: Upload Gitleaks results as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-results
-          path: gitleaks-results.json
-          retention-days: 30
 
   # ===========================================
   # SEMGREP - Scanner SAST (Análise Estática)
@@ -141,15 +124,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Semgrep
-        run: |
-          semgrep scan --config ${{ inputs.semgrep_config }} --json --output semgrep-results.json .
+        run: semgrep scan --config ${{ inputs.semgrep_config }} --sarif --output semgrep.sarif .
         continue-on-error: true
 
-      - name: Upload Semgrep results as artifact
+      - name: Upload Semgrep results
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-results
-          path: semgrep-results.json
+          path: semgrep.sarif
           retention-days: 30
 
   # ===========================================
@@ -173,102 +155,86 @@ jobs:
         with:
           path: scan-results
 
-      - name: Display downloaded files
-        run: |
-          echo "=== Arquivos baixados ==="
-          find scan-results -type f -name "*.json" | head -20
+      - name: List downloaded files
+        run: find scan-results -type f | head -30
 
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-      - name: Upload Trivy results to DefectDojo
+      - name: Upload Trivy FS to DefectDojo
         if: ${{ inputs.trivy_enabled }}
         run: |
-          if [ -f "scan-results/trivy-results/trivy-results.json" ]; then
-            echo "Uploading Trivy FS results..."
-            curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-              -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
-              -H "Content-Type: multipart/form-data" \
-              -F "scan_type=Trivy Scan" \
-              -F "file=@scan-results/trivy-results/trivy-results.json" \
-              -F "product_name=${{ inputs.product_name }}" \
-              -F "engagement_name=${{ inputs.engagement_name }}" \
-              -F "auto_create_context=true" \
-              -F "active=true" \
-              -F "verified=false" \
-              -F "scan_date=${{ steps.date.outputs.date }}" \
-              -F "close_old_findings=false" \
-              --fail-with-body || echo "Warning: Failed to upload Trivy FS results"
-          fi
+          [ -f "scan-results/trivy-results/trivy-fs.sarif" ] && \
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=SARIF" \
+            -F "file=@scan-results/trivy-results/trivy-fs.sarif" \
+            -F "product_name=${{ inputs.product_name }}" \
+            -F "engagement_name=${{ inputs.engagement_name }}" \
+            -F "auto_create_context=true" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_date=${{ steps.date.outputs.date }}" \
+            --fail-with-body || echo "Warning: Trivy FS upload failed"
 
-          if [ -f "scan-results/trivy-results/trivy-iac-results.json" ]; then
-            echo "Uploading Trivy IaC results..."
-            curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-              -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
-              -H "Content-Type: multipart/form-data" \
-              -F "scan_type=Trivy Scan" \
-              -F "file=@scan-results/trivy-results/trivy-iac-results.json" \
-              -F "product_name=${{ inputs.product_name }}" \
-              -F "engagement_name=${{ inputs.engagement_name }}" \
-              -F "auto_create_context=true" \
-              -F "active=true" \
-              -F "verified=false" \
-              -F "scan_date=${{ steps.date.outputs.date }}" \
-              -F "close_old_findings=false" \
-              --fail-with-body || echo "Warning: Failed to upload Trivy IaC results"
-          fi
+      - name: Upload Trivy IaC to DefectDojo
+        if: ${{ inputs.trivy_enabled }}
+        run: |
+          [ -f "scan-results/trivy-results/trivy-iac.sarif" ] && \
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=SARIF" \
+            -F "file=@scan-results/trivy-results/trivy-iac.sarif" \
+            -F "product_name=${{ inputs.product_name }}" \
+            -F "engagement_name=${{ inputs.engagement_name }}" \
+            -F "auto_create_context=true" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_date=${{ steps.date.outputs.date }}" \
+            --fail-with-body || echo "Warning: Trivy IaC upload failed"
 
-      - name: Upload Gitleaks results to DefectDojo
+      - name: Upload Gitleaks to DefectDojo
         if: ${{ inputs.gitleaks_enabled }}
         run: |
-          if [ -f "scan-results/gitleaks-results/gitleaks-results.json" ]; then
-            echo "Uploading Gitleaks results..."
-            curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-              -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
-              -H "Content-Type: multipart/form-data" \
-              -F "scan_type=Gitleaks Scan" \
-              -F "file=@scan-results/gitleaks-results/gitleaks-results.json" \
-              -F "product_name=${{ inputs.product_name }}" \
-              -F "engagement_name=${{ inputs.engagement_name }}" \
-              -F "auto_create_context=true" \
-              -F "active=true" \
-              -F "verified=false" \
-              -F "scan_date=${{ steps.date.outputs.date }}" \
-              -F "close_old_findings=false" \
-              --fail-with-body || echo "Warning: Failed to upload Gitleaks results"
-          fi
+          GITLEAKS_FILE=$(find scan-results -name "*.sarif" -path "*gitleaks*" 2>/dev/null | head -1)
+          [ -n "$GITLEAKS_FILE" ] && \
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=SARIF" \
+            -F "file=@$GITLEAKS_FILE" \
+            -F "product_name=${{ inputs.product_name }}" \
+            -F "engagement_name=${{ inputs.engagement_name }}" \
+            -F "auto_create_context=true" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_date=${{ steps.date.outputs.date }}" \
+            --fail-with-body || echo "Warning: Gitleaks upload failed"
 
-      - name: Upload Semgrep results to DefectDojo
+      - name: Upload Semgrep to DefectDojo
         if: ${{ inputs.semgrep_enabled }}
         run: |
-          if [ -f "scan-results/semgrep-results/semgrep-results.json" ]; then
-            echo "Uploading Semgrep results..."
-            curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-              -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
-              -H "Content-Type: multipart/form-data" \
-              -F "scan_type=Semgrep JSON Report" \
-              -F "file=@scan-results/semgrep-results/semgrep-results.json" \
-              -F "product_name=${{ inputs.product_name }}" \
-              -F "engagement_name=${{ inputs.engagement_name }}" \
-              -F "auto_create_context=true" \
-              -F "active=true" \
-              -F "verified=false" \
-              -F "scan_date=${{ steps.date.outputs.date }}" \
-              -F "close_old_findings=false" \
-              --fail-with-body || echo "Warning: Failed to upload Semgrep results"
-          fi
+          [ -f "scan-results/semgrep-results/semgrep.sarif" ] && \
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=SARIF" \
+            -F "file=@scan-results/semgrep-results/semgrep.sarif" \
+            -F "product_name=${{ inputs.product_name }}" \
+            -F "engagement_name=${{ inputs.engagement_name }}" \
+            -F "auto_create_context=true" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_date=${{ steps.date.outputs.date }}" \
+            --fail-with-body || echo "Warning: Semgrep upload failed"
 
       - name: Summary
         run: |
-          echo "## 🔒 Security Scan Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## Security Scan Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Product:** ${{ inputs.product_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Engagement:** ${{ inputs.engagement_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Scanners Executed:" >> $GITHUB_STEP_SUMMARY
-          echo "- Trivy (SCA + IaC): ${{ inputs.trivy_enabled && '✅' || '⏭️ Skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Gitleaks (Secrets): ${{ inputs.gitleaks_enabled && '✅' || '⏭️ Skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Semgrep (SAST): ${{ inputs.semgrep_enabled && '✅' || '⏭️ Skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Results uploaded to DefectDojo: ${{ inputs.upload_to_defectdojo && '✅' || '⏭️ Skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Scanners:" >> $GITHUB_STEP_SUMMARY
+          echo "- Trivy (SCA + IaC): ${{ inputs.trivy_enabled }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Gitleaks (Secrets): ${{ inputs.gitleaks_enabled }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Semgrep (SAST): ${{ inputs.semgrep_enabled }}" >> $GITHUB_STEP_SUMMARY

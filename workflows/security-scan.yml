@@ -3,10 +3,6 @@ name: EVA Security Scan Pipeline
 on:
   workflow_call:
     inputs:
-      product_name:
-        description: 'Nome do produto/projeto sendo escaneado'
-        required: true
-        type: string
       trivy_enabled:
         description: 'Habilitar scan Trivy (SCA + IaC)'
         required: false
@@ -132,8 +128,6 @@ jobs:
         run: |
           echo "## Security Scan Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Product:** ${{ inputs.product_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Scanners Executed:" >> $GITHUB_STEP_SUMMARY
           echo "| Scanner | Type | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|------|--------|" >> $GITHUB_STEP_SUMMARY
@@ -146,4 +140,4 @@ jobs:
           echo "- **gitleaks-results** - Gitleaks scan results" >> $GITHUB_STEP_SUMMARY
           echo "- **semgrep-results** - Semgrep scan results (JSON)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> Download artifacts from the **Actions** tab → select this run → **Artifacts** section" >> $GITHUB_STEP_SUMMARY
+          echo "> Download artifacts from the **Actions** tab > select this run > **Artifacts** section" >> $GITHUB_STEP_SUMMARY

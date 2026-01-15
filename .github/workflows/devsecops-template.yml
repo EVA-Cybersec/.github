@@ -1,1 +1,511 @@
+# =============================================================================
+# Template DevSecOps Centralizado - EVA-Cybersec
+# =============================================================================
+# Template PÚBLICO de segurança DevSecOps mantido pela EVA-Cybersec.
+# Fornece scans de segurança reutilizáveis para qualquer organização/repositório.
+#
+# REPOSITÓRIO: https://github.com/EVA-Cybersec/.github
+#
+# USO em repositórios de clientes:
+# -----------------------------------------------------------------------------
+#   name: Security Scan
+#
+#   on:
+#     push:
+#       branches: [main, develop]
+#     pull_request:
+#       branches: [main]
+#
+#   jobs:
+#     security:
+#       uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
+#       with:
+#         defectdojo_import: true
+#         defectdojo_product_name: "MeuProduto"
+#         defectdojo_engagement_name: "CI/CD Pipeline"
+#         extra_excludes: ".nuxt/ .output/"  # opcional
+#       secrets:
+#         GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+#         DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+#         DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+# -----------------------------------------------------------------------------
+#
+# IMPORTANTE: Este template é PÚBLICO. Todas as credenciais e URLs devem ser
+# passadas via secrets pelo repositório do cliente.
+#
+# Documentação: https://github.com/EVA-Cybersec/.github/blob/main/README.md
+# Suporte: contato@eva-cybersec.com
+# =============================================================================
 
+name: EVA-Cybersec DevSecOps Template
+
+on:
+  workflow_call:
+    inputs:
+      # -------------------------------------------------------------------------
+      # Inputs para Trivy Image Scan (quando houver build de imagem Docker)
+      # -------------------------------------------------------------------------
+      image_built:
+        type: boolean
+        required: false
+        default: false
+        description: "Se true, executa scan de imagem Docker com Trivy"
+
+      image_name:
+        type: string
+        required: false
+        default: ""
+        description: "Nome da imagem Docker para scan (ex: 'myapp:latest')"
+
+      # -------------------------------------------------------------------------
+      # Inputs para exclusões de scan
+      # -------------------------------------------------------------------------
+      extra_excludes:
+        type: string
+        required: false
+        default: ""
+        description: "Exclusões adicionais separadas por espaço (ex: '.nuxt/ .output/ vendor/')"
+
+      # -------------------------------------------------------------------------
+      # Inputs para controle de jobs
+      # -------------------------------------------------------------------------
+      run_semgrep:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar Semgrep SAST scan"
+
+      run_gitleaks:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar Gitleaks secrets scan"
+
+      gitleaks_full_scan:
+        type: boolean
+        required: false
+        default: false
+        description: "Se true, escaneia TODOS os commits do histórico. Se false, escaneia apenas commits novos."
+
+      run_trivy_fs:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar Trivy filesystem scan (dependências + IaC)"
+
+      upload_sarif:
+        type: boolean
+        required: false
+        default: true
+        description: "Se true, faz upload dos artefatos SARIF gerados pelos scans"
+
+      # -------------------------------------------------------------------------
+      # Inputs para integração com DefectDojo
+      # -------------------------------------------------------------------------
+      defectdojo_import:
+        type: boolean
+        required: false
+        default: false
+        description: "Se true, envia resultados dos scans para o DefectDojo"
+
+      defectdojo_product_name:
+        type: string
+        required: false
+        default: ""
+        description: "Nome do Product no DefectDojo (deve existir ou será criado automaticamente)"
+
+      defectdojo_engagement_name:
+        type: string
+        required: false
+        default: ""
+        description: "Nome do Engagement no DefectDojo (ex: 'CI/CD Pipeline - GitHub Actions')"
+
+    # ---------------------------------------------------------------------------
+    # SECRETS - Devem ser configuradas no repositório do cliente
+    # ---------------------------------------------------------------------------
+    secrets:
+      GITLEAKS_LICENSE:
+        required: false
+        description: "Licença do Gitleaks (obrigatória para organizações com mais de 10 colaboradores)"
+
+      DEFECTDOJO_URL:
+        required: false
+        description: "URL do servidor DefectDojo (ex: http://10.0.0.1:8080 ou https://defectdojo.empresa.com)"
+
+      DEFECTDOJO_API_KEY:
+        required: false
+        description: "Token de API do DefectDojo (Configurações > API v2 Key)"
+
+jobs:
+  # ===========================================================================
+  # SEMGREP - Static Application Security Testing (SAST)
+  # ===========================================================================
+  # Analisa código-fonte em busca de vulnerabilidades de segurança,
+  # bugs e más práticas de código usando análise semântica.
+  #
+  # Regras: https://semgrep.dev/r (usa --config auto para seleção automática)
+  # Docs: https://semgrep.dev/docs/
+  # ===========================================================================
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_semgrep }}
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep (SAST Scan)
+        run: |
+          # Exclusões padrão (universais para todos os projetos)
+          EXCLUDES="--exclude 'node_modules/' \
+            --exclude 'dist/' \
+            --exclude 'build/' \
+            --exclude 'coverage/' \
+            --exclude '.git/' \
+            --exclude '*.min.js' \
+            --exclude '*.min.css' \
+            --exclude '*.map' \
+            --exclude '*.lock' \
+            --exclude 'vendor/' \
+            --exclude '__pycache__/' \
+            --exclude '.venv/' \
+            --exclude 'venv/' \
+            --exclude 'target/' \
+            --exclude 'bin/' \
+            --exclude 'obj/'"
+
+          # Exclusões extras do projeto (se fornecidas via input)
+          EXTRA="${{ inputs.extra_excludes }}"
+          if [ -n "$EXTRA" ]; then
+            for pattern in $EXTRA; do
+              EXCLUDES="$EXCLUDES --exclude '$pattern'"
+            done
+          fi
+
+          # Executar Semgrep com regras automáticas
+          eval "semgrep scan --config auto --sarif --output semgrep.sarif --error $EXCLUDES"
+        continue-on-error: true
+
+      - name: Upload Semgrep SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # GITLEAKS - Secrets Detection
+  # ===========================================================================
+  # Escaneia o histórico do git em busca de secrets expostos
+  # (API keys, tokens, senhas, chaves privadas, etc.)
+  #
+  # Docs: https://github.com/gitleaks/gitleaks
+  # ===========================================================================
+  gitleaks:
+    name: Gitleaks Secrets Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_gitleaks }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ inputs.gitleaks_full_scan && 0 || 1 }}
+
+      # Scan incremental (apenas commits novos) - usa a action oficial
+      - name: Run Gitleaks (incremental)
+        if: ${{ !inputs.gitleaks_full_scan }}
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_SUMMARY: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+        continue-on-error: true
+
+      - name: Upload Gitleaks SARIF (incremental)
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.gitleaks_full_scan && inputs.upload_sarif }}
+        with:
+          name: gitleaks-sarif
+          path: results.sarif
+          retention-days: 30
+
+      # Full scan (todo o histórico) - usa CLI diretamente
+      - name: Install Gitleaks (full scan)
+        if: ${{ inputs.gitleaks_full_scan }}
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar -xz
+          chmod +x gitleaks
+
+      - name: Run Gitleaks (full scan)
+        if: ${{ inputs.gitleaks_full_scan }}
+        run: |
+          ./gitleaks detect --source . --verbose --report-format sarif --report-path gitleaks-report.sarif
+        continue-on-error: true
+
+      - name: Upload Gitleaks SARIF (full scan)
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.gitleaks_full_scan && inputs.upload_sarif }}
+        with:
+          name: gitleaks-sarif
+          path: gitleaks-report.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # TRIVY - Filesystem Scan (SCA + IaC)
+  # ===========================================================================
+  # Escaneia vulnerabilidades em dependências (CVEs) e misconfigurations em IaC
+  # (Dockerfile, Kubernetes, Terraform, CloudFormation, etc.) em um único scan.
+  #
+  # Docs: https://github.com/aquasecurity/trivy-action
+  # ===========================================================================
+  trivy-fs:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_trivy_fs }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'vuln,misconfig'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+          format: 'sarif'
+          output: 'trivy-fs.sarif'
+          timeout: '10m0s'
+          hide-progress: true
+        continue-on-error: true
+
+      - name: Upload Trivy SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: trivy-fs-sarif
+          path: trivy-fs.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # TRIVY - Image Scan (Docker)
+  # ===========================================================================
+  # Escaneia imagens Docker em busca de vulnerabilidades no sistema base
+  # e nas dependências instaladas. Só executa se image_built == true
+  #
+  # ===========================================================================
+  trivy-image:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.image_built == true && inputs.image_name != '' }}
+
+    steps:
+      - name: Run Trivy Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ inputs.image_name }}
+          severity: "CRITICAL,HIGH"
+          format: "sarif"
+          output: "trivy-image.sarif"
+          timeout: "10m0s"
+        continue-on-error: true
+
+      - name: Upload Trivy Image SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: trivy-image-sarif
+          path: trivy-image.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # DEFECTDOJO - Import Results
+  # ===========================================================================
+  # Envia os resultados dos scans para o DefectDojo para gestão centralizada
+  # de vulnerabilidades. Só executa se defectdojo_import == true
+  #
+  # Hierarquia DefectDojo: Product Type > Product > Engagement > Test > Finding
+  # API Docs: https://defectdojo.github.io/django-DefectDojo/integrations/importing/
+  # ===========================================================================
+  defectdojo-import:
+    name: Import to DefectDojo
+    runs-on: ubuntu-latest
+    needs: [semgrep, gitleaks, trivy-fs, trivy-image]
+    if: |
+      always() &&
+      inputs.defectdojo_import == true &&
+      inputs.defectdojo_product_name != '' &&
+      inputs.defectdojo_engagement_name != ''
+
+    steps:
+      - name: Download all SARIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sarif-results
+        continue-on-error: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           EVA-Cybersec - DefectDojo Import                   ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ Product:    ${{ inputs.defectdojo_product_name }}"
+          echo "║ Engagement: ${{ inputs.defectdojo_engagement_name }}"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "=== SARIF files encontrados ==="
+          find sarif-results -name "*.sarif" -type f 2>/dev/null || echo "Nenhum arquivo SARIF encontrado"
+
+      - name: Import Semgrep to DefectDojo
+        if: ${{ inputs.run_semgrep }}
+        run: |
+          SARIF_FILE="sarif-results/semgrep-sarif/semgrep.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Semgrep results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Semgrep SAST" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Semgrep import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Semgrep import returned HTTP $HTTP_CODE"
+              echo "$RESPONSE" | head -n -1
+            fi
+          else
+            echo "⏭️  Semgrep SARIF not found, skipping..."
+          fi
+        continue-on-error: true
+
+      - name: Import Gitleaks to DefectDojo
+        if: ${{ inputs.run_gitleaks }}
+        run: |
+          # Gitleaks pode gerar results.sarif (incremental) ou gitleaks-report.sarif (full)
+          SARIF_FILE=""
+          if [ -f "sarif-results/gitleaks-sarif/results.sarif" ]; then
+            SARIF_FILE="sarif-results/gitleaks-sarif/results.sarif"
+          elif [ -f "sarif-results/gitleaks-sarif/gitleaks-report.sarif" ]; then
+            SARIF_FILE="sarif-results/gitleaks-sarif/gitleaks-report.sarif"
+          fi
+
+          if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Gitleaks results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Gitleaks Secrets" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Gitleaks import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Gitleaks import returned HTTP $HTTP_CODE"
+              echo "$RESPONSE" | head -n -1
+            fi
+          else
+            echo "⏭️  Gitleaks SARIF not found, skipping..."
+          fi
+        continue-on-error: true
+
+      - name: Import Trivy to DefectDojo
+        if: ${{ inputs.run_trivy_fs }}
+        run: |
+          SARIF_FILE="sarif-results/trivy-fs-sarif/trivy-fs.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Trivy results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Trivy Security Scan" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Trivy import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Trivy import returned HTTP $HTTP_CODE"
+              echo "$RESPONSE" | head -n -1
+            fi
+          else
+            echo "⏭️  Trivy SARIF not found, skipping..."
+          fi
+        continue-on-error: true
+
+      - name: Import Trivy Image to DefectDojo
+        if: ${{ inputs.image_built == true && inputs.image_name != '' }}
+        run: |
+          SARIF_FILE="sarif-results/trivy-image-sarif/trivy-image.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Trivy Image results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Trivy Container" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Trivy Image import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Trivy Image import returned HTTP $HTTP_CODE"
+              echo "$RESPONSE" | head -n -1
+            fi
+          else
+            echo "⏭️  Trivy Image SARIF not found, skipping..."
+          fi
+        continue-on-error: true
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║              Import Summary - EVA-Cybersec                   ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ Product:    ${{ inputs.defectdojo_product_name }}"
+          echo "║ Engagement: ${{ inputs.defectdojo_engagement_name }}"
+          echo "║ DefectDojo: ${{ secrets.DEFECTDOJO_URL }}"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ ✅ Pipeline DevSecOps executada com sucesso!                 ║"
+          echo "║                                                              ║"
+          echo "║ 🔗 Powered by EVA-Cybersec                                   ║"
+          echo "║    https://github.com/EVA-Cybersec/.github                   ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"

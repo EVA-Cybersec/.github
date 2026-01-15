@@ -185,8 +185,8 @@ jobs:
             done
           fi
 
-          # Executar Semgrep com regras automáticas
-          eval "semgrep scan --config auto --sarif --output semgrep.sarif --error $EXCLUDES"
+          # Executar Semgrep com regras automáticas (secrets desativado - Gitleaks já cobre)
+          eval "semgrep scan --config auto --sarif --output semgrep.sarif --error --exclude-rule 'generic.secrets.*' --exclude-rule 'secrets.*' $EXCLUDES"
         continue-on-error: true
 
       - name: Upload Semgrep SARIF

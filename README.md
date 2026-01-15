@@ -1,20 +1,17 @@
-# EVA-Cybersec - Reusable Security Workflows
+# EVA-Cybersec - DevSecOps Pipeline Template
 
-Repositório público com templates de workflows reutilizáveis para pipelines de DevSecOps.
+Template público de segurança DevSecOps mantido pela EVA-Cybersec. Fornece scans de segurança reutilizáveis para qualquer organização/repositório.
 
-## Workflows Disponíveis
+---
 
-### `security-scan.yml` - Pipeline de Segurança Completo
-
-Workflow reutilizável que executa múltiplos scanners de segurança e envia os resultados para o DefectDojo.
-
-#### Scanners Incluídos
+## Scanners Incluídos
 
 | Scanner | Tipo | Descrição |
 |---------|------|-----------|
-| **Trivy** | SCA + IaC | Análise de dependências e configurações de infraestrutura |
-| **Gitleaks** | Secrets | Detecção de credenciais e secrets vazados no código |
-| **Semgrep** | SAST | Análise estática de código para vulnerabilidades |
+| **Semgrep** | SAST | Análise estática de código para vulnerabilidades, bugs e más práticas |
+| **Gitleaks** | Secrets | Detecção de credenciais e secrets vazados no código e histórico git |
+| **Trivy FS** | SCA + IaC | Análise de dependências (CVEs) e misconfigurations em IaC |
+| **Trivy Image** | Container | Scan de imagens Docker para vulnerabilidades |
 
 ---
 
@@ -24,10 +21,14 @@ Workflow reutilizável que executa múltiplos scanners de segurança e envia os 
 
 No repositório onde o workflow será executado, adicione os seguintes secrets em **Settings > Secrets and variables > Actions**:
 
-| Secret | Descrição | Exemplo |
-|--------|-----------|---------|
-| `DEFECTDOJO_URL` | URL do DefectDojo | `https://defectdojo.exemplo.com` |
-| `DEFECTDOJO_TOKEN` | API Token do DefectDojo | `abc123...` |
+| Secret | Obrigatório | Descrição |
+|--------|-------------|-----------|
+| `GITLEAKS_LICENSE` | Não* | Licença do Gitleaks |
+| `DEFECTDOJO_URL` | Não** | URL do DefectDojo (ex: `https://defectdojo.empresa.com`) |
+| `DEFECTDOJO_API_KEY` | Não** | Token de API do DefectDojo |
+
+\* Obrigatório para organizações com mais de 10 colaboradores
+\*\* Obrigatório apenas se `defectdojo_import` for `true`
 
 ### 2. Criar Workflow no Repositório do Cliente
 
@@ -38,140 +39,258 @@ name: Security Scan
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, develop]
   pull_request:
-    branches: [main, master]
-  workflow_dispatch:  # Permite execução manual
+    branches: [main]
 
 jobs:
   security:
-    uses: EVA-Cybersec/.github/.github/workflows/security-scan.yml@main
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
     with:
-      product_name: "Nome-Do-Produto"
+      defectdojo_import: true
+      defectdojo_product_name: "MeuProduto"
+      defectdojo_engagement_name: "CI/CD Pipeline"
     secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-      DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
 ```
 
 ---
 
 ## Parâmetros de Configuração
 
-### Inputs (Configurações)
+### Inputs - Controle de Scans
 
-| Input | Tipo | Obrigatório | Default | Descrição |
-|-------|------|-------------|---------|-----------|
-| `product_name` | string | ✅ Sim | - | Nome do produto no DefectDojo |
-| `engagement_name` | string | Não | `CI/CD Security Scan` | Nome do engagement no DefectDojo |
-| `trivy_enabled` | boolean | Não | `true` | Habilitar scan Trivy |
-| `gitleaks_enabled` | boolean | Não | `true` | Habilitar scan Gitleaks |
-| `semgrep_enabled` | boolean | Não | `true` | Habilitar scan Semgrep |
-| `upload_to_defectdojo` | boolean | Não | `true` | Fazer upload para DefectDojo |
-| `trivy_severity` | string | Não | `CRITICAL,HIGH,MEDIUM` | Severidades do Trivy |
-| `semgrep_config` | string | Não | `p/default` | Configuração do Semgrep |
+| Input | Tipo | Default | Descrição |
+|-------|------|---------|-----------|
+| `run_semgrep` | boolean | `true` | Executar Semgrep SAST scan |
+| `run_gitleaks` | boolean | `true` | Executar Gitleaks secrets scan |
+| `run_trivy_fs` | boolean | `true` | Executar Trivy filesystem scan (SCA + IaC) |
+| `gitleaks_full_scan` | boolean | `false` | Se `true`, escaneia TODO o histórico git. Se `false`, apenas commits novos |
+| `upload_sarif` | boolean | `true` | Fazer upload dos artefatos SARIF gerados |
 
-### Secrets (Credenciais)
+### Inputs - Docker Image Scan
+
+| Input | Tipo | Default | Descrição |
+|-------|------|---------|-----------|
+| `image_built` | boolean | `false` | Se `true`, executa scan de imagem Docker |
+| `image_name` | string | `""` | Nome da imagem Docker para scan (ex: `myapp:latest`) |
+
+### Inputs - Exclusões
+
+| Input | Tipo | Default | Descrição |
+|-------|------|---------|-----------|
+| `extra_excludes` | string | `""` | Exclusões adicionais separadas por espaço (ex: `.nuxt/ .output/ vendor/`) |
+
+### Inputs - DefectDojo
+
+| Input | Tipo | Default | Descrição |
+|-------|------|---------|-----------|
+| `defectdojo_import` | boolean | `false` | Se `true`, envia resultados para o DefectDojo |
+| `defectdojo_product_name` | string | `""` | Nome do Product no DefectDojo |
+| `defectdojo_engagement_name` | string | `""` | Nome do Engagement no DefectDojo |
+
+### Secrets
 
 | Secret | Obrigatório | Descrição |
 |--------|-------------|-----------|
-| `DEFECTDOJO_URL` | Condicional* | URL do DefectDojo |
-| `DEFECTDOJO_TOKEN` | Condicional* | API Token do DefectDojo |
+| `GITLEAKS_LICENSE` | Não* | Licença do Gitleaks |
+| `DEFECTDOJO_URL` | Condicional** | URL do servidor DefectDojo |
+| `DEFECTDOJO_API_KEY` | Condicional** | Token de API do DefectDojo |
 
-*Obrigatório apenas se `upload_to_defectdojo` for `true`
+\* Obrigatório para organizações com mais de 10 colaboradores
+\*\* Obrigatório apenas se `defectdojo_import` for `true`
 
 ---
 
 ## Exemplos de Uso
 
-### Exemplo Básico
+### Exemplo Básico (todos os scans, sem DefectDojo)
+
 ```yaml
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
 jobs:
   security:
-    uses: EVA-Cybersec/.github/.github/workflows/security-scan.yml@main
-    with:
-      product_name: "Meu-Projeto"
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
     secrets:
-      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-      DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 ```
 
-### Exemplo com Configurações Customizadas
+### Exemplo Completo (com DefectDojo)
+
 ```yaml
+name: Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
 jobs:
   security:
-    uses: EVA-Cybersec/.github/.github/workflows/security-scan.yml@main
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
     with:
-      product_name: "API-Backend"
-      engagement_name: "Sprint 42 - Security Review"
-      trivy_severity: "CRITICAL,HIGH"
-      semgrep_config: "p/owasp-top-ten"
+      defectdojo_import: true
+      defectdojo_product_name: "API-Backend"
+      defectdojo_engagement_name: "CI/CD Pipeline - GitHub Actions"
     secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-      DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
 ```
 
-### Exemplo: Apenas Trivy e Gitleaks (sem Semgrep)
+### Exemplo: Scan de Imagem Docker
+
 ```yaml
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_name: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        id: build
+        run: |
+          docker build -t myapp:${{ github.sha }} .
+          echo "image=myapp:${{ github.sha }}" >> $GITHUB_OUTPUT
+
   security:
-    uses: EVA-Cybersec/.github/.github/workflows/security-scan.yml@main
+    needs: build
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
     with:
-      product_name: "Infra-Terraform"
-      semgrep_enabled: false
+      image_built: true
+      image_name: ${{ needs.build.outputs.image_name }}
+      defectdojo_import: true
+      defectdojo_product_name: "MyApp"
+      defectdojo_engagement_name: "CI/CD Pipeline"
     secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-      DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
 ```
 
-### Exemplo: Scan sem Upload para DefectDojo
+### Exemplo: Gitleaks Full Scan (histórico completo)
+
 ```yaml
 jobs:
   security:
-    uses: EVA-Cybersec/.github/.github/workflows/security-scan.yml@main
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
     with:
-      product_name: "Projeto-Teste"
-      upload_to_defectdojo: false
+      gitleaks_full_scan: true
+      defectdojo_import: true
+      defectdojo_product_name: "Legacy-Project"
+      defectdojo_engagement_name: "Initial Security Audit"
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+```
+
+### Exemplo: Apenas Trivy (SCA/IaC)
+
+```yaml
+jobs:
+  security:
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
+    with:
+      run_semgrep: false
+      run_gitleaks: false
+      run_trivy_fs: true
+```
+
+### Exemplo: Com Exclusões Customizadas
+
+```yaml
+jobs:
+  security:
+    uses: EVA-Cybersec/.github/.github/workflows/devsecops-template.yml@main
+    with:
+      extra_excludes: ".nuxt/ .output/ generated/ third_party/"
+      defectdojo_import: true
+      defectdojo_product_name: "Nuxt-App"
+      defectdojo_engagement_name: "CI/CD Pipeline"
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
 ```
 
 ---
 
-## Configurações do Semgrep
+## Exclusões Padrão
 
-O parâmetro `semgrep_config` aceita diversas configurações:
+O Semgrep já exclui automaticamente os seguintes diretórios/arquivos:
 
-| Configuração | Descrição |
-|--------------|-----------|
-| `p/default` | Regras padrão do Semgrep |
-| `p/owasp-top-ten` | Focado nas OWASP Top 10 |
-| `p/security-audit` | Auditoria de segurança completa |
-| `p/python` | Regras específicas para Python |
-| `p/javascript` | Regras específicas para JavaScript |
-| `p/golang` | Regras específicas para Go |
+- `node_modules/`, `dist/`, `build/`, `coverage/`
+- `.git/`, `vendor/`, `__pycache__/`
+- `.venv/`, `venv/`, `target/`, `bin/`, `obj/`
+- `*.min.js`, `*.min.css`, `*.map`, `*.lock`
 
-Múltiplas configurações podem ser combinadas: `p/owasp-top-ten p/security-audit`
+Use o input `extra_excludes` para adicionar exclusões específicas do seu projeto.
 
 ---
 
 ## Artefatos Gerados
 
-Cada scan gera artefatos que ficam disponíveis por 30 dias:
+Cada scan gera artefatos SARIF que ficam disponíveis por 30 dias:
 
-- `trivy-results` - Resultados do Trivy (FS + IaC)
-- `gitleaks-results` - Resultados do Gitleaks
-- `semgrep-results` - Resultados do Semgrep
+| Artefato | Descrição |
+|----------|-----------|
+| `semgrep-sarif` | Resultados do Semgrep SAST |
+| `gitleaks-sarif` | Resultados do Gitleaks Secrets |
+| `trivy-fs-sarif` | Resultados do Trivy (dependências + IaC) |
+| `trivy-image-sarif` | Resultados do Trivy Image (se habilitado) |
 
 ---
 
-## Requisitos no DefectDojo
+## Integração DefectDojo
 
-Para que o upload funcione corretamente:
+### Hierarquia
 
-1. **Produto**: Será criado automaticamente se não existir (`auto_create_context=true`)
-2. **Engagement**: Será criado automaticamente se não existir
-3. **Permissões**: O token precisa ter permissão para criar produtos/engagements e importar scans
+```
+Product Type > Product > Engagement > Test > Finding
+```
+
+### Comportamento
+
+- **auto_create_context**: Cria automaticamente Product e Engagement se não existirem
+- **close_old_findings**: Fecha findings antigos que não aparecem mais nos scans
+- **deduplication_on_engagement**: Evita duplicação de findings no mesmo engagement
+
+### Obter API Token
+
+1. Acesse seu DefectDojo
+2. Vá em **Configurações** (ícone de engrenagem)
+3. Clique em **API v2 Key**
+4. Copie o token e adicione como secret no repositório
+
+---
+
+## Requisitos
+
+### DefectDojo (se habilitado)
+
+- DefectDojo v2.x ou superior
+- Token de API com permissões para criar Products, Engagements e importar scans
+
+### Gitleaks License
+
+- Gratuito para repositórios pessoais e organizações com até 10 colaboradores
+- Requer licença para organizações maiores: [gitleaks.io](https://gitleaks.io)
 
 ---
 
 ## Suporte
 
-Em caso de dúvidas ou problemas, entre em contato com a equipe EVA-Cybersec.
+- **Repositório**: https://github.com/EVA-Cybersec/.github
+- **Contato**: contato@eva-cybersec.com

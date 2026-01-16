@@ -378,70 +378,9 @@ jobs:
           # Count original Semgrep findings
           ORIGINAL_COUNT=$(grep -c '"ruleId"' "$SEMGREP_FILE" || echo "0")
 
-          # Process Semgrep SARIF - remove secrets findings that match Gitleaks locations
-          cat > /tmp/deduplicate.py << 'EOF'
-          import json, re, sys, os
-
-          semgrep_file = "sarif-results/semgrep-sarif/semgrep.sarif"
-          with open(semgrep_file, "r") as f:
-              semgrep = json.load(f)
-
-          gitleaks_file = ""
-          if os.path.exists("sarif-results/gitleaks-sarif/results.sarif"):
-              gitleaks_file = "sarif-results/gitleaks-sarif/results.sarif"
-          elif os.path.exists("sarif-results/gitleaks-sarif/gitleaks-report.sarif"):
-              gitleaks_file = "sarif-results/gitleaks-sarif/gitleaks-report.sarif"
-
-          if not gitleaks_file:
-              print("No Gitleaks SARIF found")
-              sys.exit(0)
-
-          with open(gitleaks_file, "r") as f:
-              gitleaks = json.load(f)
-
-          gitleaks_locations = set()
-          for run in gitleaks.get("runs", []):
-              for result in run.get("results", []):
-                  for loc in result.get("locations", []):
-                      phys = loc.get("physicalLocation", {})
-                      uri = phys.get("artifactLocation", {}).get("uri", "")
-                      line = phys.get("region", {}).get("startLine", 0)
-                      if uri and line:
-                          gitleaks_locations.add(f"{uri}:{line}")
-
-          SECRET_KEYWORDS = re.compile(r'(key|token|secret|password|credential|api.key)', re.IGNORECASE)
-
-          removed_count = 0
-          for run in semgrep.get("runs", []):
-              filtered_results = []
-              for result in run.get("results", []):
-                  rule_id = result.get("ruleId", "")
-                  message = result.get("message", {}).get("text", "")
-                  is_secret = SECRET_KEYWORDS.search(rule_id) or SECRET_KEYWORDS.search(message)
-                  if is_secret:
-                      dominated = False
-                      for loc in result.get("locations", []):
-                          phys = loc.get("physicalLocation", {})
-                          uri = phys.get("artifactLocation", {}).get("uri", "")
-                          line = phys.get("region", {}).get("startLine", 0)
-                          if f"{uri}:{line}" in gitleaks_locations:
-                              dominated = True
-                              break
-                      if dominated:
-                          removed_count += 1
-                          continue
-                  filtered_results.append(result)
-              run["results"] = filtered_results
-
-          with open(semgrep_file, "w") as f:
-              json.dump(semgrep, f, indent=2)
-
-          print(f"Removed {removed_count} duplicate secret(s) from Semgrep SARIF")
-          EOF
-
-          # Remove leading spaces from Python script (heredoc preserves indentation)
-          sed -i 's/^          //' /tmp/deduplicate.py
-          python3 /tmp/deduplicate.py
+          # Download and run deduplication script
+          curl -sL https://raw.githubusercontent.com/EVA-Cybersec/.github/main/scripts/deduplicate_sarif.py -o /tmp/deduplicate_sarif.py
+          python3 /tmp/deduplicate_sarif.py
 
           FINAL_COUNT=$(grep -c '"ruleId"' "$SEMGREP_FILE" || echo "0")
           echo "📊 Semgrep findings: $ORIGINAL_COUNT → $FINAL_COUNT"

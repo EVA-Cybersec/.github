@@ -276,6 +276,81 @@ Product Type > Product > Engagement > Test > Finding
 
 ---
 
+## Deduplicação Automática de Findings
+
+### O Problema
+
+Quando Semgrep e Gitleaks estão habilitados, ambos podem detectar secrets no código (API keys, tokens, senhas, etc.), gerando findings duplicados no DefectDojo.
+
+### A Solução
+
+O template inclui um job de deduplicação automática (`deduplicate-sarif`) que:
+
+1. **Executa automaticamente** entre os scans e o import para o DefectDojo
+2. **Compara os resultados** do Semgrep e Gitleaks por arquivo e linha
+3. **Remove duplicatas** do Semgrep quando Gitleaks já detectou o mesmo secret
+4. **Preserva Gitleaks** como fonte autoritativa para detecção de secrets
+
+### Como Funciona
+
+```
+┌─────────────┐     ┌─────────────┐
+│   Semgrep   │     │  Gitleaks   │
+│   (SAST)    │     │  (Secrets)  │
+└──────┬──────┘     └──────┬──────┘
+       │                   │
+       └───────┬───────────┘
+               ▼
+    ┌─────────────────────┐
+    │ Deduplicate SARIF   │
+    │ (Remove duplicatas) │
+    └──────────┬──────────┘
+               ▼
+    ┌─────────────────────┐
+    │  DefectDojo Import  │
+    │  (Findings únicos)  │
+    └─────────────────────┘
+```
+
+### Regras de Deduplicação
+
+| Cenário | Ação |
+|---------|------|
+| Secret detectado por ambos | Mantém Gitleaks, remove Semgrep |
+| Secret detectado apenas por Gitleaks | Mantém Gitleaks |
+| Secret detectado apenas por Semgrep | Mantém Semgrep |
+| Finding não relacionado a secrets | Mantém (sem alteração) |
+
+### Padrões Reconhecidos como Secrets
+
+O deduplicador identifica secrets no Semgrep através de padrões no `ruleId`:
+
+- `*secret*`, `*password*`, `*credential*`
+- `*api-key*`, `*api_key*`, `*apikey*`
+- `*token*`, `*auth*`, `*private*`
+- `*jwt*`, `*bearer*`
+
+### Comportamento
+
+- **Ativação automática**: Executado apenas quando `run_semgrep` e `run_gitleaks` são `true` (padrão)
+- **Sem configuração**: Não requer nenhum input adicional
+- **Tolerante a falhas**: Usa `continue-on-error` para não bloquear o pipeline
+- **Transparente**: Log detalhado mostra quantos findings foram removidos
+
+### Exemplo de Log
+
+```
+Processing SARIF deduplication...
+  Semgrep findings loaded: 15
+  Gitleaks findings loaded: 4
+  Gitleaks locations (file:line): 4
+  Semgrep secrets findings matching Gitleaks: 3
+  Semgrep findings after deduplication: 12
+  Duplicates removed: 3
+```
+
+---
+
 ## Requisitos
 
 ### DefectDojo (se habilitado)

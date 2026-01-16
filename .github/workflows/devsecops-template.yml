@@ -327,6 +327,136 @@ jobs:
           retention-days: 30
 
   # ===========================================================================
+  # DEDUPLICATE - Remove duplicate secrets from Semgrep (Gitleaks já cobre)
+  # ===========================================================================
+  # Remove findings de secrets do Semgrep que já foram detectados pelo Gitleaks
+  # (mesmo arquivo + mesma linha). Isso evita duplicatas no DefectDojo.
+  # ===========================================================================
+  deduplicate-sarif:
+    name: Deduplicate SARIF Findings
+    runs-on: ubuntu-latest
+    needs: [semgrep, gitleaks]
+    if: ${{ always() && inputs.run_semgrep && inputs.run_gitleaks }}
+
+    steps:
+      - name: Download Semgrep SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: sarif-results/semgrep-sarif
+        continue-on-error: true
+
+      - name: Download Gitleaks SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: gitleaks-sarif
+          path: sarif-results/gitleaks-sarif
+        continue-on-error: true
+
+      - name: Remove duplicate secrets from Semgrep SARIF
+        run: |
+          echo "🔍 Deduplicating Semgrep secrets findings (already covered by Gitleaks)..."
+
+          SEMGREP_FILE="sarif-results/semgrep-sarif/semgrep.sarif"
+          GITLEAKS_FILE=""
+
+          # Gitleaks pode gerar results.sarif (incremental) ou gitleaks-report.sarif (full)
+          if [ -f "sarif-results/gitleaks-sarif/results.sarif" ]; then
+            GITLEAKS_FILE="sarif-results/gitleaks-sarif/results.sarif"
+          elif [ -f "sarif-results/gitleaks-sarif/gitleaks-report.sarif" ]; then
+            GITLEAKS_FILE="sarif-results/gitleaks-sarif/gitleaks-report.sarif"
+          fi
+
+          if [ ! -f "$SEMGREP_FILE" ] || [ -z "$GITLEAKS_FILE" ] || [ ! -f "$GITLEAKS_FILE" ]; then
+            echo "⏭️  SARIF files not found, skipping deduplication"
+            exit 0
+          fi
+
+          # Extract file:line from Gitleaks findings
+          GITLEAKS_LOCATIONS=$(cat "$GITLEAKS_FILE" | grep -oP '"uri":"[^"]*"|"startLine":[0-9]+' | paste - - | sort -u)
+
+          # Count original Semgrep findings
+          ORIGINAL_COUNT=$(grep -c '"ruleId"' "$SEMGREP_FILE" || echo "0")
+
+          # Process Semgrep SARIF - remove secrets findings that match Gitleaks locations
+          cat > /tmp/deduplicate.py << 'EOF'
+          import json, re, sys, os
+
+          semgrep_file = "sarif-results/semgrep-sarif/semgrep.sarif"
+          with open(semgrep_file, "r") as f:
+              semgrep = json.load(f)
+
+          gitleaks_file = ""
+          if os.path.exists("sarif-results/gitleaks-sarif/results.sarif"):
+              gitleaks_file = "sarif-results/gitleaks-sarif/results.sarif"
+          elif os.path.exists("sarif-results/gitleaks-sarif/gitleaks-report.sarif"):
+              gitleaks_file = "sarif-results/gitleaks-sarif/gitleaks-report.sarif"
+
+          if not gitleaks_file:
+              print("No Gitleaks SARIF found")
+              sys.exit(0)
+
+          with open(gitleaks_file, "r") as f:
+              gitleaks = json.load(f)
+
+          gitleaks_locations = set()
+          for run in gitleaks.get("runs", []):
+              for result in run.get("results", []):
+                  for loc in result.get("locations", []):
+                      phys = loc.get("physicalLocation", {})
+                      uri = phys.get("artifactLocation", {}).get("uri", "")
+                      line = phys.get("region", {}).get("startLine", 0)
+                      if uri and line:
+                          gitleaks_locations.add(f"{uri}:{line}")
+
+          SECRET_KEYWORDS = re.compile(r'(key|token|secret|password|credential|api.key)', re.IGNORECASE)
+
+          removed_count = 0
+          for run in semgrep.get("runs", []):
+              filtered_results = []
+              for result in run.get("results", []):
+                  rule_id = result.get("ruleId", "")
+                  message = result.get("message", {}).get("text", "")
+                  is_secret = SECRET_KEYWORDS.search(rule_id) or SECRET_KEYWORDS.search(message)
+                  if is_secret:
+                      dominated = False
+                      for loc in result.get("locations", []):
+                          phys = loc.get("physicalLocation", {})
+                          uri = phys.get("artifactLocation", {}).get("uri", "")
+                          line = phys.get("region", {}).get("startLine", 0)
+                          if f"{uri}:{line}" in gitleaks_locations:
+                              dominated = True
+                              break
+                      if dominated:
+                          removed_count += 1
+                          continue
+                  filtered_results.append(result)
+              run["results"] = filtered_results
+
+          with open(semgrep_file, "w") as f:
+              json.dump(semgrep, f, indent=2)
+
+          print(f"Removed {removed_count} duplicate secret(s) from Semgrep SARIF")
+          EOF
+
+          # Remove leading spaces from Python script (heredoc preserves indentation)
+          sed -i 's/^          //' /tmp/deduplicate.py
+          python3 /tmp/deduplicate.py
+
+          FINAL_COUNT=$(grep -c '"ruleId"' "$SEMGREP_FILE" || echo "0")
+          echo "📊 Semgrep findings: $ORIGINAL_COUNT → $FINAL_COUNT"
+        continue-on-error: true
+
+      - name: Re-upload cleaned Semgrep SARIF
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: sarif-results/semgrep-sarif/semgrep.sarif
+          overwrite: true
+          retention-days: 30
+        continue-on-error: true
+
+  # ===========================================================================
   # DEFECTDOJO - Import Results
   # ===========================================================================
   # Envia os resultados dos scans para o DefectDojo para gestão centralizada
@@ -338,7 +468,7 @@ jobs:
   defectdojo-import:
     name: Import to DefectDojo
     runs-on: ubuntu-latest
-    needs: [semgrep, gitleaks, trivy-fs, trivy-image]
+    needs: [deduplicate-sarif, trivy-fs, trivy-image]
     if: |
       always() &&
       inputs.defectdojo_import == true &&

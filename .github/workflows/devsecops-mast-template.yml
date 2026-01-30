@@ -1,0 +1,455 @@
+# =============================================================================
+# Template MAST (Mobile Application Security Testing) - EVA-Cybersec
+# =============================================================================
+# Template PÚBLICO de segurança para aplicações MOBILE (Flutter, React Native,
+# Android nativo, iOS nativo).
+#
+# REPOSITÓRIO: https://github.com/EVA-Cybersec/.github
+#
+# USO em repositórios mobile:
+# -----------------------------------------------------------------------------
+#   name: Security Scan
+#
+#   on:
+#     push:
+#       branches: [main, develop]
+#     workflow_dispatch:
+#
+#   jobs:
+#     security:
+#       uses: EVA-Cybersec/.github/.github/workflows/devsecops-mast-template.yml@main
+#       with:
+#         defectdojo_import: true
+#         defectdojo_product_name: "MeuAppMobile"
+#         defectdojo_engagement_name: "CI/CD Pipeline - GitHub Actions"
+#       secrets:
+#         GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+#         DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+#         DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+# -----------------------------------------------------------------------------
+#
+# DIFERENÇA DO TEMPLATE SAST:
+# - Semgrep usa regras mobile (p/flutter, p/dart, p/mobile)
+# - MobSF scan para vulnerabilidades específicas de mobile
+# - Análise de AndroidManifest.xml e Info.plist
+#
+# Documentação: https://github.com/EVA-Cybersec/.github/blob/main/README.md
+# =============================================================================
+
+name: EVA-Cybersec MAST Template
+
+on:
+  workflow_call:
+    inputs:
+      # -------------------------------------------------------------------------
+      # Inputs para exclusões de scan
+      # -------------------------------------------------------------------------
+      extra_excludes:
+        type: string
+        required: false
+        default: ""
+        description: "Exclusões adicionais separadas por espaço (ex: 'ios/Pods/ android/.gradle/')"
+
+      # -------------------------------------------------------------------------
+      # Inputs para controle de jobs
+      # -------------------------------------------------------------------------
+      run_semgrep_mobile:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar Semgrep com regras mobile (Flutter/Dart/Android/iOS)"
+
+      run_mobsf:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar MobSF static scan"
+
+      run_gitleaks:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar Gitleaks secrets scan"
+
+      run_trivy_fs:
+        type: boolean
+        required: false
+        default: true
+        description: "Executar Trivy filesystem scan (dependências)"
+
+      upload_sarif:
+        type: boolean
+        required: false
+        default: true
+        description: "Se true, faz upload dos artefatos SARIF gerados pelos scans"
+
+      # -------------------------------------------------------------------------
+      # Inputs para integração com DefectDojo
+      # -------------------------------------------------------------------------
+      defectdojo_import:
+        type: boolean
+        required: false
+        default: false
+        description: "Se true, envia resultados dos scans para o DefectDojo"
+
+      defectdojo_product_name:
+        type: string
+        required: false
+        default: ""
+        description: "Nome do Product no DefectDojo"
+
+      defectdojo_engagement_name:
+        type: string
+        required: false
+        default: ""
+        description: "Nome do Engagement no DefectDojo"
+
+    # ---------------------------------------------------------------------------
+    # SECRETS
+    # ---------------------------------------------------------------------------
+    secrets:
+      GITLEAKS_LICENSE:
+        required: false
+        description: "Licença do Gitleaks"
+
+      DEFECTDOJO_URL:
+        required: false
+        description: "URL do servidor DefectDojo"
+
+      DEFECTDOJO_API_KEY:
+        required: false
+        description: "Token de API do DefectDojo"
+
+jobs:
+  # ===========================================================================
+  # SEMGREP MOBILE - SAST com regras específicas para Mobile
+  # ===========================================================================
+  # Usa regras específicas para Flutter, Dart, Android e iOS
+  # Detecta: insecure storage, weak crypto, hardcoded secrets, HTTP usage, etc.
+  # ===========================================================================
+  semgrep-mobile:
+    name: Semgrep Mobile SAST
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_semgrep_mobile }}
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep Mobile Scan
+        run: |
+          # Exclusões padrão para projetos mobile
+          EXCLUDES="--exclude 'node_modules/' \
+            --exclude 'build/' \
+            --exclude '.dart_tool/' \
+            --exclude '.pub-cache/' \
+            --exclude 'ios/Pods/' \
+            --exclude 'ios/.symlinks/' \
+            --exclude 'android/.gradle/' \
+            --exclude 'android/build/' \
+            --exclude '*.g.dart' \
+            --exclude '*.freezed.dart' \
+            --exclude '*.mocks.dart' \
+            --exclude 'coverage/' \
+            --exclude '.git/'"
+
+          # Exclusões extras do projeto
+          EXTRA="${{ inputs.extra_excludes }}"
+          if [ -n "$EXTRA" ]; then
+            for pattern in $EXTRA; do
+              EXCLUDES="$EXCLUDES --exclude '$pattern'"
+            done
+          fi
+
+          # Regras mobile: Flutter, Dart, Mobile genérico, Android, iOS
+          # p/flutter - regras específicas Flutter
+          # p/dart - regras Dart
+          # p/mobile - regras genéricas mobile
+          # p/secrets - detecção de secrets (complementa Gitleaks)
+          eval "semgrep scan \
+            --config p/flutter \
+            --config p/dart \
+            --config p/mobile \
+            --config p/secrets \
+            --sarif --output semgrep-mobile.sarif \
+            --error $EXCLUDES"
+        continue-on-error: true
+
+      - name: Upload Semgrep Mobile SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: semgrep-mobile-sarif
+          path: semgrep-mobile.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # MOBSF - Mobile Security Framework Static Scan
+  # ===========================================================================
+  # Analisa código-fonte mobile em busca de:
+  # - Insecure data storage
+  # - Insecure communication
+  # - Hardcoded secrets
+  # - Weak cryptography
+  # - Improper platform usage
+  # - Code tampering risks
+  #
+  # Docs: https://github.com/MobSF/mobsfscan
+  # ===========================================================================
+  mobsf-scan:
+    name: MobSF Static Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_mobsf }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install mobsfscan
+        run: pip install mobsfscan
+
+      - name: Run MobSF Scan
+        run: |
+          mobsfscan . \
+            --sarif \
+            --output mobsf-results.sarif \
+            || true
+        continue-on-error: true
+
+      - name: Upload MobSF SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: mobsf-sarif
+          path: mobsf-results.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # GITLEAKS - Secrets Detection (igual ao template SAST)
+  # ===========================================================================
+  gitleaks:
+    name: Gitleaks Secrets Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_gitleaks }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_SUMMARY: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+        continue-on-error: true
+
+      - name: Upload Gitleaks SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: gitleaks-sarif
+          path: results.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # TRIVY - SCA para dependências mobile (pubspec.yaml, package.json, etc.)
+  # ===========================================================================
+  trivy-fs:
+    name: Trivy Dependency Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_trivy_fs }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'vuln'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+          format: 'sarif'
+          output: 'trivy-fs.sarif'
+          timeout: '10m0s'
+          hide-progress: true
+        continue-on-error: true
+
+      - name: Upload Trivy SARIF
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          name: trivy-fs-sarif
+          path: trivy-fs.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # DEFECTDOJO - Import Results
+  # ===========================================================================
+  defectdojo-import:
+    name: Import to DefectDojo
+    runs-on: ubuntu-latest
+    needs: [semgrep-mobile, mobsf-scan, gitleaks, trivy-fs]
+    if: |
+      always() &&
+      inputs.defectdojo_import == true &&
+      inputs.defectdojo_product_name != '' &&
+      inputs.defectdojo_engagement_name != ''
+
+    steps:
+      - name: Download all SARIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sarif-results
+        continue-on-error: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           EVA-Cybersec - MAST DefectDojo Import              ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ Product:    ${{ inputs.defectdojo_product_name }}"
+          echo "║ Engagement: ${{ inputs.defectdojo_engagement_name }}"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "=== SARIF files encontrados ==="
+          find sarif-results -name "*.sarif" -type f 2>/dev/null || echo "Nenhum arquivo SARIF encontrado"
+
+      - name: Import Semgrep Mobile to DefectDojo
+        if: ${{ inputs.run_semgrep_mobile }}
+        run: |
+          SARIF_FILE="sarif-results/semgrep-mobile-sarif/semgrep-mobile.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Semgrep Mobile results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Semgrep Mobile SAST" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Semgrep Mobile import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Semgrep Mobile import returned HTTP $HTTP_CODE"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Import MobSF to DefectDojo
+        if: ${{ inputs.run_mobsf }}
+        run: |
+          SARIF_FILE="sarif-results/mobsf-sarif/mobsf-results.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing MobSF results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=MobSF Static Scan" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ MobSF import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  MobSF import returned HTTP $HTTP_CODE"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Import Gitleaks to DefectDojo
+        if: ${{ inputs.run_gitleaks }}
+        run: |
+          SARIF_FILE="sarif-results/gitleaks-sarif/results.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Gitleaks results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Gitleaks Secrets" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Gitleaks import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Gitleaks import returned HTTP $HTTP_CODE"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Import Trivy to DefectDojo
+        if: ${{ inputs.run_trivy_fs }}
+        run: |
+          SARIF_FILE="sarif-results/trivy-fs-sarif/trivy-fs.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            echo "📤 Importing Trivy results to DefectDojo..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "scan_type=SARIF" \
+              -F "file=@$SARIF_FILE" \
+              -F "product_name=${{ inputs.defectdojo_product_name }}" \
+              -F "engagement_name=${{ inputs.defectdojo_engagement_name }}" \
+              -F "test_title=Trivy Dependency Scan" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              -F "deduplication_on_engagement=true" \
+              -F "verified=false" \
+              -F "active=true")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Trivy import completed! (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Trivy import returned HTTP $HTTP_CODE"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          MAST Import Summary - EVA-Cybersec                  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ Product:    ${{ inputs.defectdojo_product_name }}"
+          echo "║ Engagement: ${{ inputs.defectdojo_engagement_name }}"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║ ✅ Pipeline MAST executada com sucesso!                      ║"
+          echo "║                                                              ║"
+          echo "║ 📱 Mobile Security Testing by EVA-Cybersec                   ║"
+          echo "║    https://github.com/EVA-Cybersec/.github                   ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
